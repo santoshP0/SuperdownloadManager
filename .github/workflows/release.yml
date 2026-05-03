@@ -1,0 +1,57 @@
+name: Release
+
+# Trigger: push a version tag like: git tag v0.2.0 && git push origin v0.2.0
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  build-windows:
+    name: Build Windows installer
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Setup Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Build app & publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "SuperDownloadManager ${{ github.ref_name }}"
+          releaseBody: |
+            ## SuperDownloadManager ${{ github.ref_name }}
+
+            ### Download & Install (Windows)
+            | File | Description |
+            |------|-------------|
+            | `SuperDownloadManager_x64-setup.exe` | **Recommended** — NSIS one-click installer |
+            | `SuperDownloadManager_x64_en-US.msi` | Windows Installer (MSI) |
+
+            > **Note:** Windows may show a SmartScreen warning on first run because the app
+            > is not yet code-signed. Click **More info → Run anyway** to proceed.
+
+            ### What's new
+            See the [commit history](https://github.com/${{ github.repository }}/commits/${{ github.ref_name }})
+          releaseDraft: false
+          prerelease: false
