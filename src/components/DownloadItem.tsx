@@ -38,6 +38,7 @@ function fileIcon(filename: string) {
 const STATUS_BADGE: Record<string, string> = {
   queued: "bg-slate-600 text-slate-300",
   downloading: "bg-blue-500/20 text-blue-400",
+  retrying: "bg-orange-500/20 text-orange-400",
   paused: "bg-yellow-500/20 text-yellow-400",
   completed: "bg-green-500/20 text-green-400",
   failed: "bg-red-500/20 text-red-400",
@@ -54,6 +55,7 @@ export function DownloadItem({
 }: Props) {
   const percent = formatPercent(item.downloaded, item.total_size);
   const isActive = item.status === "downloading";
+  const isRetrying = item.status === "retrying";
   const isPaused = item.status === "paused";
   const isCompleted = item.status === "completed";
   const isFailed = item.status === "failed";
@@ -76,7 +78,7 @@ export function DownloadItem({
             <span
               className={`shrink-0 text-xs px-2 py-0.5 rounded-full font-medium capitalize ${STATUS_BADGE[item.status] ?? ""}`}
             >
-              {item.status}
+              {isRetrying ? `Retry ${item.retry_count}/3` : item.status}
             </span>
           </div>
 
@@ -106,11 +108,12 @@ export function DownloadItem({
             </div>
           </div>
 
-          {/* Error */}
+          {/* Error / retry message */}
           {isFailed && item.error && (
-            <p className="mt-1.5 text-red-400 text-xs">
-              Error: {item.error}
-            </p>
+            <p className="mt-1.5 text-red-400 text-xs">Error: {item.error}</p>
+          )}
+          {isRetrying && item.error && (
+            <p className="mt-1.5 text-orange-400 text-xs">{item.error}</p>
           )}
         </div>
 

@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub enum DownloadStatus {
     Queued,
     Downloading,
+    Retrying,
     Paused,
     Completed,
     Failed,
@@ -26,6 +27,7 @@ pub struct DownloadItem {
     pub chunk_count: u8,
     pub error: Option<String>,
     pub supports_resume: bool,
+    pub retry_count: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,10 +1,10 @@
 use anyhow::Result;
 use serde_json::json;
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -12,6 +12,9 @@ use uuid::Uuid;
 use super::chunk::{self, create_chunks, download_chunk, download_single, merge_chunks};
 use super::speed::SpeedTracker;
 use super::task::{ChunkState, DownloadItem, DownloadStatus, ResumeState};
+use crate::persistence;
+
+const MAX_RETRIES: u8 = 3;
 
 struct ActiveHandle {
     cancelled: Arc<AtomicBool>,
@@ -27,7 +30,7 @@ pub struct DownloadManager {
 impl DownloadManager {
     pub fn new() -> Self {
         Self {
-            downloads: HashMap::new(),
+            downloads: persistence::load_history(),
             active: HashMap::new(),
             queue: VecDeque::new(),
             max_concurrent: 3,
@@ -75,11 +78,13 @@ pub async fn add_download(
         chunk_count,
         error: None,
         supports_resume: false,
+        retry_count: 0,
     };
 
     let should_start = {
         let mut m = mgr.lock().await;
         m.downloads.insert(id.clone(), item);
+        persistence::save_history(&m.downloads);
         if m.has_capacity() {
             true
         } else {
@@ -97,17 +102,16 @@ pub async fn add_download(
 
 pub async fn pause_download(mgr: Arc<Mutex<DownloadManager>>, id: &str) -> Result<()> {
     let mut m = mgr.lock().await;
-    // If running, signal cancellation
     if let Some(handle) = m.active.get(id) {
         handle.cancelled.store(true, Ordering::Relaxed);
     }
-    // If just queued, remove from queue
     m.queue.retain(|q| q != id);
     if let Some(item) = m.downloads.get_mut(id) {
         item.status = DownloadStatus::Paused;
         item.speed = 0.0;
         item.eta_seconds = 0;
     }
+    persistence::save_history(&m.downloads);
     Ok(())
 }
 
@@ -120,7 +124,10 @@ pub async fn resume_download(
         let mut m = mgr.lock().await;
         if let Some(item) = m.downloads.get_mut(id) {
             item.status = DownloadStatus::Queued;
+            item.error = None;
+            item.retry_count = 0;
         }
+        persistence::save_history(&m.downloads);
         if m.has_capacity() {
             true
         } else {
@@ -143,11 +150,9 @@ pub async fn cancel_download(mgr: Arc<Mutex<DownloadManager>>, id: &str) -> Resu
             handle.cancelled.store(true, Ordering::Relaxed);
         }
         m.active.remove(id);
-        let info = m
-            .downloads
-            .get(id)
-            .map(|i| (i.save_path.clone(), i.id.clone()));
+        let info = m.downloads.get(id).map(|i| (i.save_path.clone(), i.id.clone()));
         m.downloads.remove(id);
+        persistence::save_history(&m.downloads);
         info.unzip()
     };
 
@@ -158,25 +163,52 @@ pub async fn cancel_download(mgr: Arc<Mutex<DownloadManager>>, id: &str) -> Resu
     Ok(())
 }
 
-// ─── Internal launch (non-async, breaks the Send cycle) ──────────────────────
+// ─── Internal helpers ─────────────────────────────────────────────────────────
 
-/// Spawn a download driver without awaiting it. Non-async → no Send cycle.
 fn launch(mgr: Arc<Mutex<DownloadManager>>, id: String, app: AppHandle) {
     tokio::spawn(drive(mgr, id, app));
 }
 
-// ─── Driver loop — runs until no more queued items ────────────────────────────
+/// Resolve filename conflicts: "file.zip" → "file (1).zip" → "file (2).zip" ...
+fn resolve_filename(dir: &Path, filename: &str) -> (PathBuf, String) {
+    let path = dir.join(filename);
+    if !path.exists() {
+        return (path, filename.to_string());
+    }
 
-/// Each call to `launch` starts one driver that processes sequential downloads.
+    let stem = Path::new(filename)
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let ext = Path::new(filename)
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+
+    let mut n = 1u32;
+    loop {
+        let new_name = format!("{} ({}){}", stem, n, ext);
+        let new_path = dir.join(&new_name);
+        if !new_path.exists() {
+            return (new_path, new_name);
+        }
+        n += 1;
+    }
+}
+
+// ─── Driver loop ──────────────────────────────────────────────────────────────
+
 async fn drive(mgr: Arc<Mutex<DownloadManager>>, initial_id: String, app: AppHandle) {
     let mut current_id = initial_id;
 
     loop {
-        // ── Set up download ─────────────────────────────────────────────────
+        // Snapshot item fields
         let (url, filename, save_path, chunk_count) = {
             let mut m = mgr.lock().await;
             let Some(item) = m.downloads.get_mut(&current_id) else { break };
             item.status = DownloadStatus::Downloading;
+            item.retry_count = 0;
             (
                 item.url.clone(),
                 item.filename.clone(),
@@ -196,21 +228,74 @@ async fn drive(mgr: Arc<Mutex<DownloadManager>>, initial_id: String, app: AppHan
             );
         }
 
-        // ── Run download ────────────────────────────────────────────────────
-        let result = run_download(
-            url,
-            filename,
-            save_path,
-            chunk_count,
-            cancelled.clone(),
-            progress,
-            mgr.clone(),
-            current_id.clone(),
-            app.clone(),
-        )
-        .await;
+        // ── Retry loop ────────────────────────────────────────────────────────
+        let mut attempt = 0u8;
+        let result = loop {
+            // Reset progress counter for each attempt
+            progress.store(0, Ordering::Relaxed);
 
-        // ── Handle result ───────────────────────────────────────────────────
+            let r = run_download(
+                url.clone(),
+                filename.clone(),
+                save_path.clone(),
+                chunk_count,
+                cancelled.clone(),
+                progress.clone(),
+                mgr.clone(),
+                current_id.clone(),
+                app.clone(),
+            )
+            .await;
+
+            let was_cancelled = cancelled.load(Ordering::Relaxed);
+            let is_paused = mgr
+                .lock()
+                .await
+                .downloads
+                .get(&current_id)
+                .map(|i| i.status == DownloadStatus::Paused)
+                .unwrap_or(false);
+
+            if r.is_ok() || was_cancelled || is_paused || attempt >= MAX_RETRIES {
+                break r;
+            }
+
+            attempt += 1;
+            let delay_secs = 2u64.pow(attempt as u32); // 2s, 4s, 8s
+
+            {
+                let mut m = mgr.lock().await;
+                if let Some(item) = m.downloads.get_mut(&current_id) {
+                    item.status = DownloadStatus::Retrying;
+                    item.retry_count = attempt;
+                    item.error = Some(format!(
+                        "Retry {}/{} in {}s…",
+                        attempt, MAX_RETRIES, delay_secs
+                    ));
+                    item.speed = 0.0;
+                }
+                persistence::save_history(&m.downloads);
+            }
+
+            let _ = app.emit(
+                "download://retrying",
+                json!({ "id": current_id, "attempt": attempt }),
+            );
+
+            tokio::time::sleep(Duration::from_secs(delay_secs)).await;
+
+            // Re-set to Downloading before next attempt
+            {
+                let mut m = mgr.lock().await;
+                if let Some(item) = m.downloads.get_mut(&current_id) {
+                    item.status = DownloadStatus::Downloading;
+                    item.error = None;
+                }
+            }
+        };
+        // ─────────────────────────────────────────────────────────────────────
+
+        // ── Handle result ─────────────────────────────────────────────────────
         let was_paused;
         let next_id = {
             let mut m = mgr.lock().await;
@@ -229,9 +314,12 @@ async fn drive(mgr: Arc<Mutex<DownloadManager>>, initial_id: String, app: AppHan
                         item.downloaded = item.total_size;
                         item.speed = 0.0;
                         item.eta_seconds = 0;
+                        item.error = None;
                     }
-                    let _ =
-                        app.emit("download://completed", json!({ "id": current_id }));
+                    let _ = app.emit(
+                        "download://completed",
+                        json!({ "id": current_id }),
+                    );
                 }
                 Ok(()) => {} // paused — status already set
                 Err(e) => {
@@ -248,10 +336,10 @@ async fn drive(mgr: Arc<Mutex<DownloadManager>>, initial_id: String, app: AppHan
                 }
             }
 
+            persistence::save_history(&m.downloads);
             m.queue.pop_front()
         };
 
-        // ── Continue with next queued item, or exit loop ────────────────────
         match next_id {
             Some(id) => current_id = id,
             None => break,
@@ -272,18 +360,21 @@ async fn run_download(
     id: String,
     app: AppHandle,
 ) -> Result<()> {
-    // Probe URL for size and range support
     let (total_size, supports_ranges) = chunk::probe_url(&url).await?;
+
+    // Resolve filename conflicts before touching the filesystem
+    let (final_path, actual_filename) =
+        resolve_filename(Path::new(&save_path), &filename);
 
     {
         let mut m = mgr.lock().await;
         if let Some(item) = m.downloads.get_mut(&id) {
             item.total_size = total_size;
             item.supports_resume = supports_ranges;
+            item.filename = actual_filename.clone();
         }
     }
 
-    let final_path = PathBuf::from(&save_path).join(&filename);
     let temp_dir = PathBuf::from(&save_path).join(format!(".sdm_{}", id));
     tokio::fs::create_dir_all(&temp_dir).await?;
 
@@ -300,11 +391,9 @@ async fn run_download(
         // ── Multi-chunk parallel download ───────────────────────────────────
         let chunks = initial_chunks.unwrap_or_else(|| create_chunks(total_size, chunk_count));
 
-        // Seed the progress counter with already-downloaded bytes (for resume)
         let already: u64 = chunks.iter().map(|c| c.downloaded).sum();
         progress.store(already, Ordering::Relaxed);
 
-        // Progress monitor (fires every 500 ms)
         let mon = start_monitor(
             progress.clone(),
             cancelled.clone(),
@@ -314,7 +403,6 @@ async fn run_download(
             app.clone(),
         );
 
-        // Download all chunks in parallel
         let tasks: Vec<_> = chunks
             .iter()
             .map(|c| {
@@ -332,7 +420,6 @@ async fn run_download(
         let results = futures::future::join_all(tasks).await;
         mon.abort();
 
-        // If paused/cancelled: persist resume state
         if cancelled.load(Ordering::Relaxed) {
             let updated: Vec<ChunkState> = chunks
                 .iter()
@@ -389,7 +476,7 @@ fn start_monitor(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut tracker = SpeedTracker::new();
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
+        let mut interval = tokio::time::interval(Duration::from_millis(500));
 
         loop {
             interval.tick().await;

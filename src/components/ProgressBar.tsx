@@ -5,6 +5,7 @@ interface Props {
 
 const colorMap: Record<string, string> = {
   downloading: "bg-blue-500",
+  retrying: "bg-orange-500",
   completed: "bg-green-500",
   paused: "bg-yellow-500",
   failed: "bg-red-500",

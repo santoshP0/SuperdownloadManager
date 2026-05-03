@@ -1,6 +1,7 @@
 export type DownloadStatus =
   | "queued"
   | "downloading"
+  | "retrying"
   | "paused"
   | "completed"
   | "failed"
@@ -20,6 +21,7 @@ export interface DownloadItem {
   chunk_count: number;
   error: string | null;
   supports_resume: boolean;
+  retry_count: number;
 }
 
 export interface ProgressEvent {
@@ -37,4 +39,9 @@ export interface CompletedEvent {
 export interface FailedEvent {
   id: string;
   error: string;
+}
+
+export interface RetryingEvent {
+  id: string;
+  attempt: number;
 }

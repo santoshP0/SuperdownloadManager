@@ -1,6 +1,7 @@
 pub mod api_server;
 pub mod commands;
 pub mod downloader;
+pub mod persistence;
 pub mod state;
 pub mod tray;
 

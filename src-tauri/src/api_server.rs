@@ -83,6 +83,7 @@ async fn handle_add(
         chunk_count,
         error: None,
         supports_resume: false,
+        retry_count: 0,
     };
 
     {

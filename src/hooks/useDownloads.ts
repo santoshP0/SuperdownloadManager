@@ -6,6 +6,7 @@ import type {
   DownloadItem,
   FailedEvent,
   ProgressEvent,
+  RetryingEvent,
 } from "../types/download";
 
 export function useDownloads() {
@@ -71,7 +72,20 @@ export function useDownloads() {
         }
       );
 
-      unlistenRefs.current = [unProgress, unCompleted, unFailed];
+      const unRetrying = await listen<RetryingEvent>(
+        "download://retrying",
+        ({ payload }) => {
+          setDownloads((prev) =>
+            prev.map((d) =>
+              d.id === payload.id
+                ? { ...d, status: "retrying", retry_count: payload.attempt, speed: 0 }
+                : d
+            )
+          );
+        }
+      );
+
+      unlistenRefs.current = [unProgress, unCompleted, unFailed, unRetrying];
     };
 
     setupListeners();
