@@ -32,9 +32,11 @@ impl Default for Settings {
 }
 
 fn default_save_path() -> String {
+    // USERPROFILE on Windows, HOME on macOS/Linux — PathBuf::join handles the separator
     std::env::var("USERPROFILE")
-        .map(|h| format!("{}\\Downloads", h))
-        .or_else(|_| std::env::var("HOME").map(|h| format!("{}/Downloads", h)))
+        .or_else(|_| std::env::var("HOME"))
+        .map(|h| std::path::PathBuf::from(h).join("Downloads"))
+        .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| ".".to_string())
 }
 
