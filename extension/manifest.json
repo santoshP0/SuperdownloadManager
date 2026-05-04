@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Super Download Manager",
   "version": "1.0.0",
-  "description": "Automatically capture browser downloads and send them to Super Download Manager",
+  "description": "Automatically capture browser downloads and send them to Super Download Manager for faster, parallel downloading.",
   "permissions": [
     "downloads",
     "notifications",
@@ -17,5 +17,16 @@
   "action": {
     "default_popup": "popup.html",
     "default_title": "Super Download Manager"
+  },
+  "icons": {
+    "16":  "icons/icon16.png",
+    "48":  "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "sdm@superdownloadmanager.app",
+      "strict_min_version": "109.0"
+    }
   }
 }

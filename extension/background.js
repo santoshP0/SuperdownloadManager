@@ -49,7 +49,7 @@ chrome.downloads.onCreated.addListener(async (item) => {
         type: "basic",
         title: "Super Download Manager",
         message: `Captured: ${filename}`,
-        iconUrl: chrome.runtime.getURL("icon.png"),
+        iconUrl: "icons/icon48.png",
       });
     } else {
       chrome.downloads.resume(item.id);

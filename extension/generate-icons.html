@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Generate SDM Icons</title>
+  <style>
+    body { font-family: sans-serif; padding: 32px; background: #0f172a; color: #e2e8f0; }
+    p { margin-top: 16px; color: #94a3b8; }
+    code { background: #1e293b; padding: 2px 6px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h2>⚡ Generating icons…</h2>
+  <p id="out"></p>
+  <script>
+    function makeIcon(size) {
+      const c = document.createElement("canvas");
+      c.width = c.height = size;
+      const ctx = c.getContext("2d");
+
+      // Rounded blue background
+      const r = size * 0.2;
+      ctx.beginPath();
+      ctx.moveTo(r, 0);
+      ctx.arcTo(size, 0, size, size, r);
+      ctx.arcTo(size, size, 0, size, r);
+      ctx.arcTo(0, size, 0, 0, r);
+      ctx.arcTo(0, 0, size, 0, r);
+      ctx.closePath();
+      ctx.fillStyle = "#1d4ed8";
+      ctx.fill();
+
+      // Lightning bolt emoji centred
+      ctx.font = `${Math.floor(size * 0.58)}px serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("⚡", size / 2, size / 2 + size * 0.02);
+
+      return c.toDataURL("image/png");
+    }
+
+    const sizes = [16, 48, 128];
+    sizes.forEach(size => {
+      const a = document.createElement("a");
+      a.href = makeIcon(size);
+      a.download = `icon${size}.png`;
+      document.body.appendChild(a);
+      a.click();
+    });
+
+    document.getElementById("out").innerHTML =
+      "Done! Three PNG files were downloaded. Move them into <code>extension/icons/</code> then you can load the extension.";
+  </script>
+</body>
+</html>
