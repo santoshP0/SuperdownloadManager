@@ -2,6 +2,7 @@ pub mod api_server;
 pub mod commands;
 pub mod downloader;
 pub mod persistence;
+pub mod settings;
 pub mod state;
 pub mod tray;
 
@@ -18,15 +19,17 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
-            let manager = Arc::new(Mutex::new(DownloadManager::new()));
+            let s = settings::load();
 
-            // Start local HTTP API for browser extension (non-blocking)
+            let mut mgr = DownloadManager::new();
+            mgr.apply_settings(&s);
+            let manager = Arc::new(Mutex::new(mgr));
+            let settings = Arc::new(Mutex::new(s));
+
             tokio::spawn(api_server::start(manager.clone()));
-
-            // System tray
             tray::setup(app)?;
 
-            app.manage(AppState { manager });
+            app.manage(AppState { manager, settings });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -39,9 +42,10 @@ pub fn run() {
             commands::get_default_download_dir,
             commands::open_file,
             commands::open_folder,
+            commands::get_settings,
+            commands::save_settings,
         ])
         .on_window_event(|window, event| {
-            // Hide to tray instead of quitting on window close
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let _ = window.hide();
                 api.prevent_close();

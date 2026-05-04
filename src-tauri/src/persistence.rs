@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use crate::downloader::task::{DownloadItem, DownloadStatus};
 
-fn data_dir() -> PathBuf {
+pub fn data_dir() -> PathBuf {
     // Windows: %APPDATA%\com.superdownload.manager
     // Linux/Mac: ~/.config/com.superdownload.manager
     let base = std::env::var_os("APPDATA")

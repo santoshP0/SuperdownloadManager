@@ -3,12 +3,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
 interface Props {
+  initialUrl?: string;
   onAdd: (url: string, filename: string, savePath: string, chunks: number) => void;
   onClose: () => void;
 }
 
-export function AddDownloadModal({ onAdd, onClose }: Props) {
-  const [url, setUrl] = useState("");
+export function AddDownloadModal({ initialUrl, onAdd, onClose }: Props) {
+  const [url, setUrl] = useState(initialUrl ?? "");
   const [filename, setFilename] = useState("");
   const [savePath, setSavePath] = useState("");
   const [chunks, setChunks] = useState(8);

@@ -45,3 +45,12 @@ export interface RetryingEvent {
   id: string;
   attempt: number;
 }
+
+export interface Settings {
+  default_save_path: string;
+  default_chunk_count: number;
+  max_concurrent: number;
+  speed_limit_kbps: number;
+  clipboard_monitor: boolean;
+  notifications: boolean;
+}
