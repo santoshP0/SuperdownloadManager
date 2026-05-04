@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AddDownloadModal } from "./components/AddDownloadModal";
 import { DownloadList } from "./components/DownloadList";
 import { Header } from "./components/Header";
@@ -28,11 +28,11 @@ function App() {
   } = useDownloads();
 
   // Load clipboard_monitor preference once on mount
-  useState(() => {
+  useEffect(() => {
     invoke<Settings>("get_settings")
       .then((s) => setClipboardEnabled(s.clipboard_monitor))
       .catch(() => {});
-  });
+  }, []);
 
   useClipboardMonitor(clipboardEnabled, (url) => {
     setClipboardUrl(url);

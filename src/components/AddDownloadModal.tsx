@@ -17,6 +17,9 @@ export function AddDownloadModal({ initialUrl, onAdd, onClose }: Props) {
 
   useEffect(() => {
     invoke<string>("get_default_download_dir").then(setSavePath).catch(() => {});
+    invoke<{ default_chunk_count: number }>("get_settings")
+      .then((s) => setChunks(s.default_chunk_count))
+      .catch(() => {});
     urlRef.current?.focus();
   }, []);
 
