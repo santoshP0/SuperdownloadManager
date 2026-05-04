@@ -26,7 +26,7 @@ pub fn run() {
             let manager = Arc::new(Mutex::new(mgr));
             let settings = Arc::new(Mutex::new(s));
 
-            tokio::spawn(api_server::start(manager.clone(), settings.clone()));
+            tauri::async_runtime::spawn(api_server::start(manager.clone(), settings.clone()));
             tray::setup(app)?;
 
             app.manage(AppState { manager, settings });
