@@ -38,7 +38,7 @@ function App() {
       setClipboardEnabled(s.clipboard_monitor);
       setSoundEnabled(s.sound_on_completion);
     }).catch(() => {});
-  }, [setSoundEnabled]);
+  }, [setSoundEnabled, setClipboardEnabled]);
 
   useClipboardMonitor(clipboardEnabled, (url) => {
     setClipboardUrl(url);
