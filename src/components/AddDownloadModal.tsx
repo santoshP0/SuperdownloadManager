@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import type { Settings } from "../types/download";
 
 interface Props {
   initialUrl?: string;
@@ -17,7 +18,7 @@ export function AddDownloadModal({ initialUrl, onAdd, onClose }: Props) {
 
   useEffect(() => {
     invoke<string>("get_default_download_dir").then(setSavePath).catch(() => {});
-    invoke<{ default_chunk_count: number }>("get_settings")
+    invoke<Settings>("get_settings")
       .then((s) => setChunks(s.default_chunk_count))
       .catch(() => {});
     urlRef.current?.focus();

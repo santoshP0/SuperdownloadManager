@@ -14,30 +14,37 @@ use tokio::sync::Mutex;
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::downloader::manager::DownloadManager;
+use crate::settings::Settings;
+
+#[derive(Clone)]
+struct ApiState {
+    mgr:      Arc<Mutex<DownloadManager>>,
+    settings: Arc<Mutex<Settings>>,
+}
 
 #[derive(Debug, Deserialize)]
 struct AddRequest {
-    url: String,
-    filename: Option<String>,
-    save_path: Option<String>,
+    url:         String,
+    filename:    Option<String>,
+    save_path:   Option<String>,
     chunk_count: Option<u8>,
 }
 
 #[derive(Debug, Serialize)]
 struct AddResponse {
-    id: String,
+    id:     String,
     status: &'static str,
 }
 
 #[derive(Debug, Serialize)]
 struct StatusResponse {
-    active: usize,
-    queued: usize,
+    active:    usize,
+    queued:    usize,
     downloads: Vec<crate::downloader::task::DownloadItem>,
 }
 
 async fn handle_add(
-    State(mgr): State<Arc<Mutex<DownloadManager>>>,
+    State(state): State<ApiState>,
     Json(req): Json<AddRequest>,
 ) -> impl IntoResponse {
     use crate::downloader::chunk::filename_from_url;
@@ -47,23 +54,16 @@ async fn handle_add(
         .filter(|f| !f.is_empty())
         .unwrap_or_else(|| filename_from_url(&req.url));
 
-    let save_path = req.save_path.unwrap_or_else(|| {
-        if cfg!(target_os = "windows") {
-            std::env::var("USERPROFILE")
-                .map(|h| format!("{}\\Downloads", h))
-                .unwrap_or_else(|_| ".".to_string())
-        } else {
-            std::env::var("HOME")
-                .map(|h| format!("{}/Downloads", h))
-                .unwrap_or_else(|_| ".".to_string())
-        }
-    });
+    // Use user's configured defaults, not hardcoded ones
+    let (default_path, default_chunks) = {
+        let s = state.settings.lock().await;
+        (s.default_save_path.clone(), s.default_chunk_count)
+    };
 
-    let chunk_count = req.chunk_count.unwrap_or(8).max(1).min(16);
+    let save_path   = req.save_path.unwrap_or(default_path);
+    let chunk_count = req.chunk_count.unwrap_or(default_chunks).max(1).min(16);
 
-    // We can't emit Tauri events from here (no AppHandle), so we add directly to the manager.
-    // The frontend will pick it up on next poll or via a future WebSocket upgrade.
-    let id = uuid::Uuid::new_v4().to_string();
+    let id  = uuid::Uuid::new_v4().to_string();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -74,55 +74,50 @@ async fn handle_add(
         url: req.url,
         filename,
         save_path,
-        total_size: 0,
-        downloaded: 0,
-        status: crate::downloader::task::DownloadStatus::Queued,
-        speed: 0.0,
-        eta_seconds: 0,
-        created_at: now,
+        total_size:     0,
+        downloaded:     0,
+        status:         crate::downloader::task::DownloadStatus::Queued,
+        speed:          0.0,
+        eta_seconds:    0,
+        created_at:     now,
         chunk_count,
-        error: None,
+        error:          None,
         supports_resume: false,
-        retry_count: 0,
+        retry_count:    0,
     };
 
     {
-        let mut m = mgr.lock().await;
+        let mut m = state.mgr.lock().await;
         m.downloads.insert(id.clone(), item);
-        m.queue.push_back(id.clone()); // will be picked up by the manager
+        m.queue.push_back(id.clone());
     }
 
-    (
-        StatusCode::OK,
-        Json(AddResponse { id, status: "queued" }),
-    )
+    (StatusCode::OK, Json(AddResponse { id, status: "queued" }))
 }
 
-async fn handle_status(
-    State(mgr): State<Arc<Mutex<DownloadManager>>>,
-) -> impl IntoResponse {
-    let m = mgr.lock().await;
+async fn handle_status(State(state): State<ApiState>) -> impl IntoResponse {
+    let m = state.mgr.lock().await;
     Json(StatusResponse {
-        active: m.downloads.values().filter(|i| {
-            matches!(i.status, crate::downloader::task::DownloadStatus::Downloading)
-        }).count(),
-        queued: m.downloads.values().filter(|i| {
-            matches!(i.status, crate::downloader::task::DownloadStatus::Queued)
-        }).count(),
+        active: m.downloads.values()
+            .filter(|i| matches!(i.status, crate::downloader::task::DownloadStatus::Downloading))
+            .count(),
+        queued: m.downloads.values()
+            .filter(|i| matches!(i.status, crate::downloader::task::DownloadStatus::Queued))
+            .count(),
         downloads: m.get_all(),
     })
 }
 
-pub async fn start(mgr: Arc<Mutex<DownloadManager>>) {
+pub async fn start(mgr: Arc<Mutex<DownloadManager>>, settings: Arc<Mutex<Settings>>) {
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any);
 
     let app = Router::new()
-        .route("/add", post(handle_add))
+        .route("/add",    post(handle_add))
         .route("/status", get(handle_status))
-        .with_state(mgr)
+        .with_state(ApiState { mgr, settings })
         .layer(cors);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 9876));

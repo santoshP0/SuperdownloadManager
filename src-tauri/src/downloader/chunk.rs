@@ -15,7 +15,7 @@ fn build_client() -> Client {
         .user_agent("SuperDownloadManager/0.1 (Windows)")
         .tcp_keepalive(Duration::from_secs(30))
         .build()
-        .unwrap()
+        .expect("failed to initialise HTTP client — TLS backend unavailable")
 }
 
 /// Probe the URL: returns (content_length, supports_byte_ranges).
