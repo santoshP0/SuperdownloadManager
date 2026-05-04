@@ -56,7 +56,20 @@ export function AddDownloadModal({ initialUrl, onAdd, onClose }: Props) {
 
         {/* URL */}
         <div className="space-y-1.5">
-          <label className="text-slate-400 text-sm">Download URL</label>
+          <div className="flex items-center justify-between">
+            <label className="text-slate-400 text-sm">Download URL</label>
+            <button
+              onClick={async () => {
+                try {
+                  const text = await navigator.clipboard.readText();
+                  if (text.startsWith("http")) setUrl(text.trim());
+                } catch {}
+              }}
+              className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
+            >
+              📋 Paste from clipboard
+            </button>
+          </div>
           <input
             ref={urlRef}
             value={url}

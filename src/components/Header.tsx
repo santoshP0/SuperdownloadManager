@@ -22,19 +22,19 @@ export function Header({ activeCount, totalSpeed, onNewDownload, onOpenSettings 
         )}
       </div>
 
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2">
         {totalSpeed > 0 && (
-          <span className="text-blue-400 text-sm font-medium">
+          <span className="text-blue-400 text-sm font-medium mr-2">
             ↓ {formatSpeed(totalSpeed)}
           </span>
         )}
         <button
           onClick={onOpenSettings}
-          title="Settings"
-          className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-400
-                     hover:bg-slate-700 hover:text-white transition-colors text-base"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-slate-400
+                     hover:bg-slate-700 hover:text-white transition-colors text-sm"
         >
-          ⚙
+          <span>⚙</span>
+          <span>Settings</span>
         </button>
         <button
           onClick={onNewDownload}

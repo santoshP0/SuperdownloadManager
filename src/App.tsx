@@ -21,6 +21,7 @@ function App() {
     pauseDownload,
     resumeDownload,
     cancelDownload,
+    removeDownload,
     openFile,
     openFolder,
     totalSpeed,
@@ -52,6 +53,7 @@ function App() {
         onPause={pauseDownload}
         onResume={resumeDownload}
         onCancel={cancelDownload}
+        onRemove={removeDownload}
         onOpenFile={openFile}
         onOpenFolder={openFolder}
       />

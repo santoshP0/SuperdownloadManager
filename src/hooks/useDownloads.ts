@@ -143,6 +143,11 @@ export function useDownloads() {
     setDownloads((prev) => prev.filter((d) => d.id !== id));
   }, []);
 
+  // Remove a completed item from the local list (no backend call needed)
+  const removeDownload = useCallback((id: string) => {
+    setDownloads((prev) => prev.filter((d) => d.id !== id));
+  }, []);
+
   const openFile = useCallback((path: string, filename: string) => {
     invoke("open_file", { path: `${path}/${filename}` });
   }, []);
@@ -165,6 +170,7 @@ export function useDownloads() {
     pauseDownload,
     resumeDownload,
     cancelDownload,
+    removeDownload,
     openFile,
     openFolder,
     totalSpeed,
