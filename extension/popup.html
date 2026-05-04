@@ -6,33 +6,18 @@
 </head>
 <body>
   <div id="app">
-    <!-- Header -->
     <header>
       <div class="logo">⚡ Super Download Manager</div>
-      <label class="switch" title="Enable/disable capturing">
+      <label class="switch" title="Enable / disable capturing">
         <input type="checkbox" id="toggle" checked />
         <span class="track"></span>
       </label>
     </header>
 
-    <!-- Connection status -->
-    <div id="status-bar">
+    <div id="status">
       <span id="dot"></span>
-      <span id="status-text">Connecting…</span>
+      <span id="msg">Checking…</span>
     </div>
-
-    <!-- Stats row -->
-    <div id="stats" class="hidden">
-      <div class="stat"><span id="stat-active">0</span><small>Active</small></div>
-      <div class="stat"><span id="stat-queued">0</span><small>Queued</small></div>
-      <div class="stat"><span id="stat-done">0</span><small>Done</small></div>
-    </div>
-
-    <!-- Download list -->
-    <ul id="list"></ul>
-
-    <!-- Footer -->
-    <footer>Make sure the desktop app is running</footer>
   </div>
   <script src="popup.js"></script>
 </body>
