@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Super Download Manager",
+  "short_name": "SDM",
   "version": "1.0.0",
-  "description": "Automatically capture browser downloads and send them to Super Download Manager for faster, parallel downloading.",
+  "description": "Send downloads to Super Download Manager for faster parallel downloading. One click — that's it.",
   "permissions": [
     "downloads",
     "notifications",
