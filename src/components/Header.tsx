@@ -1,13 +1,21 @@
+import { SpeedGraph } from "./SpeedGraph";
 import { formatSpeed } from "../utils/format";
 
 interface Props {
   activeCount: number;
   totalSpeed: number;
+  speedHistory: number[];
   onNewDownload: () => void;
   onOpenSettings: () => void;
 }
 
-export function Header({ activeCount, totalSpeed, onNewDownload, onOpenSettings }: Props) {
+export function Header({
+  activeCount,
+  totalSpeed,
+  speedHistory,
+  onNewDownload,
+  onOpenSettings,
+}: Props) {
   return (
     <header className="flex items-center justify-between px-5 py-3.5 border-b border-slate-700/60 bg-surface-900 shrink-0">
       <div className="flex items-center gap-3">
@@ -22,12 +30,17 @@ export function Header({ activeCount, totalSpeed, onNewDownload, onOpenSettings 
         )}
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-3">
+        {/* Speed graph + label — only visible while downloading */}
         {totalSpeed > 0 && (
-          <span className="text-blue-400 text-sm font-medium mr-2">
-            ↓ {formatSpeed(totalSpeed)}
-          </span>
+          <div className="flex items-center gap-2 bg-slate-800/60 rounded-lg px-3 py-1.5">
+            <SpeedGraph history={speedHistory} width={100} height={28} />
+            <span className="text-blue-400 text-sm font-medium tabular-nums">
+              ↓ {formatSpeed(totalSpeed)}
+            </span>
+          </div>
         )}
+
         <button
           onClick={onOpenSettings}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-slate-400

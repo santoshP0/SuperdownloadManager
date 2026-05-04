@@ -9,9 +9,30 @@ import type {
   RetryingEvent,
 } from "../types/download";
 
+function playDing() {
+  try {
+    const ctx = new AudioContext();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(880, ctx.currentTime);
+    osc.frequency.setValueAtTime(1100, ctx.currentTime + 0.12);
+    gain.gain.setValueAtTime(0.18, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.6);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.6);
+  } catch { /* AudioContext unavailable */ }
+}
+
 export function useDownloads() {
   const [downloads, setDownloads] = useState<DownloadItem[]>([]);
   const unlistenRefs = useRef<Array<() => void>>([]);
+  const soundRef = useRef(true); // mirrors settings.sound_on_completion
+
+  // Expose a setter so App.tsx can sync it from Settings
+  const setSoundEnabled = useCallback((v: boolean) => { soundRef.current = v; }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -49,6 +70,7 @@ export function useDownloads() {
       const unCompleted = await listen<CompletedEvent>(
         "download://completed",
         ({ payload }) => {
+          if (soundRef.current) playDing();
           setDownloads((prev) =>
             prev.map((d) =>
               d.id === payload.id
@@ -175,5 +197,6 @@ export function useDownloads() {
     openFolder,
     totalSpeed,
     activeCount,
+    setSoundEnabled,
   };
 }

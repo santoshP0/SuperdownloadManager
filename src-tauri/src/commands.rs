@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use tauri::{AppHandle, State};
 
 use crate::downloader::manager;
@@ -7,6 +8,24 @@ use crate::state::AppState;
 
 fn map_err(e: anyhow::Error) -> String {
     e.to_string()
+}
+
+fn file_category(filename: &str) -> &'static str {
+    let ext = std::path::Path::new(filename)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "mp4" | "mkv" | "avi" | "mov" | "wmv" | "webm" | "flv" | "m4v" => "Videos",
+        "mp3" | "flac" | "wav" | "aac" | "ogg" | "m4a" | "opus"        => "Music",
+        "pdf" | "epub" | "mobi" | "doc" | "docx" | "xls" | "xlsx"
+        | "ppt" | "pptx" | "txt"                                        => "Documents",
+        "exe" | "msi" | "dmg" | "pkg" | "deb" | "rpm" | "apk"          => "Programs",
+        "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" | "zst"    => "Archives",
+        "iso" | "img"                                                    => "Disk Images",
+        _                                                                => "Other",
+    }
 }
 
 #[tauri::command]
@@ -19,7 +38,20 @@ pub async fn add_download(
     app: AppHandle,
 ) -> Result<String, String> {
     let chunk_count = chunk_count.max(1).min(16);
-    manager::add_download(state.manager.clone(), url, filename, save_path, chunk_count, app)
+
+    let effective_path = {
+        let s = state.settings.lock().await;
+        if s.category_folders {
+            PathBuf::from(&save_path)
+                .join(file_category(&filename))
+                .to_string_lossy()
+                .to_string()
+        } else {
+            save_path
+        }
+    };
+
+    manager::add_download(state.manager.clone(), url, filename, effective_path, chunk_count, app)
         .await
         .map_err(map_err)
 }
@@ -70,10 +102,7 @@ pub async fn save_settings(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     crate::settings::save(&new_settings);
-
-    // Apply to running manager immediately
     state.manager.lock().await.apply_settings(&new_settings);
-
     *state.settings.lock().await = new_settings;
     Ok(())
 }

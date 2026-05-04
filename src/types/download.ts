@@ -53,4 +53,6 @@ export interface Settings {
   speed_limit_kbps: number;
   clipboard_monitor: boolean;
   notifications: boolean;
+  sound_on_completion: boolean;
+  category_folders: boolean;
 }

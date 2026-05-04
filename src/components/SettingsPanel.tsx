@@ -14,6 +14,8 @@ const DEFAULT: Settings = {
   speed_limit_kbps: 0,
   clipboard_monitor: true,
   notifications: true,
+  sound_on_completion: true,
+  category_folders: false,
 };
 
 export function SettingsPanel({ onClose }: Props) {
@@ -165,6 +167,18 @@ export function SettingsPanel({ onClose }: Props) {
             description="Show a toast when a download completes"
             value={settings.notifications}
             onChange={(v) => set("notifications", v)}
+          />
+          <Toggle
+            label="Sound on Completion"
+            description="Play a short ding when each download finishes"
+            value={settings.sound_on_completion}
+            onChange={(v) => set("sound_on_completion", v)}
+          />
+          <Toggle
+            label="Category Folders"
+            description="Auto-sort downloads into Videos, Music, Documents… subfolders"
+            value={settings.category_folders}
+            onChange={(v) => set("category_folders", v)}
           />
         </div>
 

@@ -11,6 +11,9 @@ pub struct Settings {
     pub speed_limit_kbps: u32,
     pub clipboard_monitor: bool,
     pub notifications: bool,
+    pub sound_on_completion: bool,
+    /// Auto-sort downloads into Videos / Music / Documents / … subfolders
+    pub category_folders: bool,
 }
 
 impl Default for Settings {
@@ -22,6 +25,8 @@ impl Default for Settings {
             speed_limit_kbps: 0,
             clipboard_monitor: true,
             notifications: true,
+            sound_on_completion: true,
+            category_folders: false,
         }
     }
 }

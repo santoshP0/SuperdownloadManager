@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { AddDownloadModal } from "./components/AddDownloadModal";
 import { DownloadList } from "./components/DownloadList";
 import { Header } from "./components/Header";
@@ -6,7 +7,7 @@ import { SettingsPanel } from "./components/SettingsPanel";
 import { StatusBar } from "./components/StatusBar";
 import { useClipboardMonitor } from "./hooks/useClipboardMonitor";
 import { useDownloads } from "./hooks/useDownloads";
-import { invoke } from "@tauri-apps/api/core";
+import { useSpeedHistory } from "./hooks/useSpeedHistory";
 import type { Settings } from "./types/download";
 
 function App() {
@@ -26,25 +27,38 @@ function App() {
     openFolder,
     totalSpeed,
     activeCount,
+    setSoundEnabled,
   } = useDownloads();
 
-  // Load clipboard_monitor preference once on mount
+  const speedHistory = useSpeedHistory(totalSpeed);
+
+  // Load preferences from settings on mount
   useEffect(() => {
-    invoke<Settings>("get_settings")
-      .then((s) => setClipboardEnabled(s.clipboard_monitor))
-      .catch(() => {});
-  }, []);
+    invoke<Settings>("get_settings").then((s) => {
+      setClipboardEnabled(s.clipboard_monitor);
+      setSoundEnabled(s.sound_on_completion);
+    }).catch(() => {});
+  }, [setSoundEnabled]);
 
   useClipboardMonitor(clipboardEnabled, (url) => {
     setClipboardUrl(url);
     setShowModal(true);
   });
 
+  const handleSettingsClose = () => {
+    setShowSettings(false);
+    invoke<Settings>("get_settings").then((s) => {
+      setClipboardEnabled(s.clipboard_monitor);
+      setSoundEnabled(s.sound_on_completion);
+    }).catch(() => {});
+  };
+
   return (
     <div className="dark flex flex-col h-screen bg-surface-900 text-white overflow-hidden">
       <Header
         activeCount={activeCount}
         totalSpeed={totalSpeed}
+        speedHistory={speedHistory}
         onNewDownload={() => setShowModal(true)}
         onOpenSettings={() => setShowSettings(true)}
       />
@@ -67,17 +81,7 @@ function App() {
         />
       )}
 
-      {showSettings && (
-        <SettingsPanel
-          onClose={() => {
-            setShowSettings(false);
-            // Re-read clipboard setting in case user changed it
-            invoke<Settings>("get_settings")
-              .then((s) => setClipboardEnabled(s.clipboard_monitor))
-              .catch(() => {});
-          }}
-        />
-      )}
+      {showSettings && <SettingsPanel onClose={handleSettingsClose} />}
     </div>
   );
 }
