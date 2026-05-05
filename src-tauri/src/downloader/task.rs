@@ -28,6 +28,7 @@ pub struct DownloadItem {
     pub error: Option<String>,
     pub supports_resume: bool,
     pub retry_count: u8,
+    pub headers: Option<std::collections::HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

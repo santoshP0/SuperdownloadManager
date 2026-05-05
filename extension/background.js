@@ -37,7 +37,14 @@ chrome.downloads.onCreated.addListener(async (item) => {
     const res = await fetch(`${API}/add`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: item.url, filename }),
+      body: JSON.stringify({ 
+        url: item.url, 
+        filename,
+        headers: {
+          "Referer": item.referrer || "",
+          "User-Agent": navigator.userAgent
+        }
+      }),
     });
 
     if (res.ok) {

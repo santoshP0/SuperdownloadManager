@@ -20,6 +20,7 @@ use crate::settings::Settings;
 struct ApiState {
     mgr:      Arc<Mutex<DownloadManager>>,
     settings: Arc<Mutex<Settings>>,
+    app:      tauri::AppHandle,
 }
 
 #[derive(Debug, Deserialize)]
@@ -28,6 +29,7 @@ struct AddRequest {
     filename:    Option<String>,
     save_path:   Option<String>,
     chunk_count: Option<u8>,
+    headers:     Option<std::collections::HashMap<String, String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -54,7 +56,6 @@ async fn handle_add(
         .filter(|f| !f.is_empty())
         .unwrap_or_else(|| filename_from_url(&req.url));
 
-    // Use user's configured defaults, not hardcoded ones
     let (default_path, default_chunks) = {
         let s = state.settings.lock().await;
         (s.default_save_path.clone(), s.default_chunk_count)
@@ -63,36 +64,20 @@ async fn handle_add(
     let save_path   = req.save_path.unwrap_or(default_path);
     let chunk_count = req.chunk_count.unwrap_or(default_chunks).max(1).min(16);
 
-    let id  = uuid::Uuid::new_v4().to_string();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    let item = crate::downloader::task::DownloadItem {
-        id: id.clone(),
-        url: req.url,
+    let res = crate::downloader::manager::add_download(
+        state.mgr.clone(),
+        req.url,
         filename,
         save_path,
-        total_size:     0,
-        downloaded:     0,
-        status:         crate::downloader::task::DownloadStatus::Queued,
-        speed:          0.0,
-        eta_seconds:    0,
-        created_at:     now,
         chunk_count,
-        error:          None,
-        supports_resume: false,
-        retry_count:    0,
-    };
+        req.headers,
+        state.app.clone()
+    ).await;
 
-    {
-        let mut m = state.mgr.lock().await;
-        m.downloads.insert(id.clone(), item);
-        m.queue.push_back(id.clone());
+    match res {
+        Ok(id) => (StatusCode::OK, Json(AddResponse { id, status: "queued" })),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(AddResponse { id: "".into(), status: "error" })),
     }
-
-    (StatusCode::OK, Json(AddResponse { id, status: "queued" }))
 }
 
 async fn handle_status(State(state): State<ApiState>) -> impl IntoResponse {
@@ -108,20 +93,20 @@ async fn handle_status(State(state): State<ApiState>) -> impl IntoResponse {
     })
 }
 
-pub async fn start(mgr: Arc<Mutex<DownloadManager>>, settings: Arc<Mutex<Settings>>) {
+pub async fn start(mgr: Arc<Mutex<DownloadManager>>, settings: Arc<Mutex<Settings>>, app: tauri::AppHandle) {
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let app = Router::new()
+    let app_router = Router::new()
         .route("/add",    post(handle_add))
         .route("/status", get(handle_status))
-        .with_state(ApiState { mgr, settings })
+        .with_state(ApiState { mgr, settings, app })
         .layer(cors);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 9876));
     if let Ok(listener) = tokio::net::TcpListener::bind(addr).await {
-        let _ = axum::serve(listener, app).await;
+        let _ = axum::serve(listener, app_router).await;
     }
 }

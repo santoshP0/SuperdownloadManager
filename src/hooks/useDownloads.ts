@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
+  ChunkProgress,
   CompletedEvent,
   DownloadItem,
   FailedEvent,
@@ -60,6 +61,7 @@ export function useDownloads() {
                     speed: payload.speed,
                     eta_seconds: payload.eta_seconds,
                     status: "downloading",
+                    chunk_progress: payload.chunks,
                   }
                 : d
             )
@@ -74,7 +76,7 @@ export function useDownloads() {
           setDownloads((prev) =>
             prev.map((d) =>
               d.id === payload.id
-                ? { ...d, status: "completed", speed: 0, eta_seconds: 0 }
+                ? { ...d, status: "completed", speed: 0, eta_seconds: 0, downloaded: d.total_size, chunk_progress: undefined }
                 : d
             )
           );
@@ -165,8 +167,8 @@ export function useDownloads() {
     setDownloads((prev) => prev.filter((d) => d.id !== id));
   }, []);
 
-  // Remove a completed item from the local list (no backend call needed)
-  const removeDownload = useCallback((id: string) => {
+  const removeDownload = useCallback(async (id: string) => {
+    await invoke("cancel_download", { id });
     setDownloads((prev) => prev.filter((d) => d.id !== id));
   }, []);
 
@@ -174,8 +176,8 @@ export function useDownloads() {
     invoke("open_file", { path: `${path}/${filename}` });
   }, []);
 
-  const openFolder = useCallback((path: string) => {
-    invoke("open_folder", { path });
+  const openFolder = useCallback((path: string, filename: string) => {
+    invoke("open_folder", { path, filename });
   }, []);
 
   const totalSpeed = downloads

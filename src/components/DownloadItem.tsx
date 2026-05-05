@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { DownloadItem as DLItem } from "../types/download";
 import { formatBytes, formatETA, formatPercent, formatSpeed } from "../utils/format";
 import { ProgressBar } from "./ProgressBar";
@@ -9,24 +10,14 @@ interface Props {
   onCancel: (id: string) => void;
   onRemove: (id: string) => void;
   onOpenFile: (path: string, filename: string) => void;
-  onOpenFolder: (path: string) => void;
+  onOpenFolder: (path: string, filename: string) => void;
 }
 
 const FILE_ICON: Record<string, string> = {
-  zip: "🗜",
-  rar: "🗜",
-  "7z": "🗜",
-  tar: "🗜",
-  gz: "🗜",
-  mp4: "🎬",
-  mkv: "🎬",
-  avi: "🎬",
-  mov: "🎬",
-  mp3: "🎵",
-  flac: "🎵",
-  wav: "🎵",
-  exe: "📦",
-  msi: "📦",
+  zip: "🗜", rar: "🗜", "7z": "🗜", tar: "🗜", gz: "🗜",
+  mp4: "🎬", mkv: "🎬", avi: "🎬", mov: "🎬",
+  mp3: "🎵", flac: "🎵", wav: "🎵",
+  exe: "📦", msi: "📦",
   pdf: "📄",
   iso: "💿",
 };
@@ -37,49 +28,56 @@ function fileIcon(filename: string) {
 }
 
 const STATUS_BADGE: Record<string, string> = {
-  queued:     "bg-slate-600 text-slate-300",
-  downloading:"bg-blue-500/20 text-blue-400",
-  retrying:   "bg-orange-500/20 text-orange-400",
-  paused:     "bg-yellow-500/20 text-yellow-400",
-  completed:  "bg-green-500/20 text-green-400",
-  failed:     "bg-red-500/20 text-red-400",
-  cancelled:  "bg-slate-700 text-slate-400",
+  queued:      "bg-slate-600 text-slate-300",
+  downloading: "bg-blue-500/20 text-blue-400",
+  retrying:    "bg-orange-500/20 text-orange-400",
+  paused:      "bg-yellow-500/20 text-yellow-400",
+  completed:   "bg-green-500/20 text-green-400",
+  failed:      "bg-red-500/20 text-red-400",
+  cancelled:   "bg-slate-700 text-slate-400",
 };
+
+// Distinct colours cycling per chunk (IDM-style)
+const CHUNK_COLORS = [
+  "bg-blue-500", "bg-green-500", "bg-purple-500", "bg-orange-500",
+  "bg-pink-500",  "bg-teal-500",  "bg-yellow-500", "bg-red-500",
+  "bg-cyan-500",  "bg-indigo-500","bg-lime-500",   "bg-rose-500",
+  "bg-sky-500",   "bg-emerald-500","bg-violet-500","bg-amber-500",
+];
 
 export function DownloadItem({
   item,
-  onPause,
-  onResume,
-  onCancel,
-  onRemove,
-  onOpenFile,
-  onOpenFolder,
+  onPause, onResume, onCancel, onRemove, onOpenFile, onOpenFolder,
 }: Props) {
-  const percent = formatPercent(item.downloaded, item.total_size);
-  const isActive    = item.status === "downloading";
-  const isRetrying  = item.status === "retrying";
-  const isPaused    = item.status === "paused";
-  const isCompleted = item.status === "completed";
-  const isFailed    = item.status === "failed";
+  const [expanded, setExpanded] = useState(false);
+
+  const percent    = formatPercent(item.downloaded, item.total_size);
+  const isActive   = item.status === "downloading";
+  const isRetrying = item.status === "retrying";
+  const isPaused   = item.status === "paused";
+  const isCompleted= item.status === "completed";
+  const isFailed   = item.status === "failed";
+
+  const hasChunks = (item.chunk_progress?.length ?? 0) > 1;
+  const canExpand = hasChunks && (isActive || isPaused || isRetrying);
 
   return (
     <div className="bg-surface-800 border border-slate-700/60 rounded-xl p-4 hover:border-slate-600 transition-colors">
       <div className="flex items-start gap-3">
-        {/* File type icon */}
-        <span className="text-2xl select-none mt-0.5 shrink-0">
+        {/* File icon — click to expand chunk view if available */}
+        <button
+          onClick={() => canExpand && setExpanded((v) => !v)}
+          className={`text-2xl select-none mt-0.5 shrink-0 ${canExpand ? "cursor-pointer" : "cursor-default"}`}
+          title={canExpand ? (expanded ? "Hide connections" : "Show connections") : undefined}
+        >
           {fileIcon(item.filename)}
-        </span>
+        </button>
 
-        {/* Main info */}
         <div className="flex-1 min-w-0">
           {/* Filename + status badge */}
           <div className="flex items-center gap-2 mb-1">
-            <span className="text-white font-medium text-sm truncate">
-              {item.filename}
-            </span>
-            <span
-              className={`shrink-0 text-xs px-2 py-0.5 rounded-full font-medium capitalize ${STATUS_BADGE[item.status] ?? ""}`}
-            >
+            <span className="text-white font-medium text-sm truncate">{item.filename}</span>
+            <span className={`shrink-0 text-xs px-2 py-0.5 rounded-full font-medium capitalize ${STATUS_BADGE[item.status] ?? ""}`}>
               {isRetrying ? `Retrying (${item.retry_count}/3)` : item.status}
             </span>
           </div>
@@ -87,7 +85,7 @@ export function DownloadItem({
           {/* Source URL */}
           <p className="text-slate-500 text-xs truncate mb-2">{item.url}</p>
 
-          {/* Progress bar */}
+          {/* Overall progress bar */}
           <ProgressBar percent={percent} status={item.status} />
 
           {/* Stats row */}
@@ -107,10 +105,44 @@ export function DownloadItem({
                 </>
               )}
               {item.chunk_count > 1 && (
-                <span className="text-slate-500">{item.chunk_count} connections</span>
+                <button
+                  onClick={() => canExpand && setExpanded((v) => !v)}
+                  className={`text-slate-500 ${canExpand ? "hover:text-slate-300 cursor-pointer" : "cursor-default"}`}
+                >
+                  {item.chunk_count} connections {canExpand ? (expanded ? "▲" : "▼") : ""}
+                </button>
               )}
             </div>
           </div>
+
+          {/* ── Per-chunk connection view (IDM-style) ── */}
+          {expanded && hasChunks && item.chunk_progress && (
+            <div className="mt-3 space-y-1.5">
+              <div className="text-[10px] text-slate-600 uppercase tracking-wide font-semibold mb-1">
+                Connection progress
+              </div>
+              {item.chunk_progress.map((c) => {
+                const chunkPct = c.size > 0 ? Math.min(100, (c.downloaded / c.size) * 100) : 0;
+                const color = CHUNK_COLORS[c.id % CHUNK_COLORS.length];
+                return (
+                  <div key={c.id} className="flex items-center gap-2">
+                    <span className="text-[10px] text-slate-500 w-5 text-right shrink-0">
+                      {c.id + 1}
+                    </span>
+                    <div className="flex-1 h-1.5 bg-slate-700 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all duration-500 ${color}`}
+                        style={{ width: `${chunkPct}%` }}
+                      />
+                    </div>
+                    <span className="text-[10px] text-slate-500 w-8 text-right shrink-0">
+                      {formatBytes(c.downloaded)}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
 
           {/* Error / retry message */}
           {isFailed && item.error && (
@@ -137,7 +169,7 @@ export function DownloadItem({
           {isCompleted && (
             <>
               <Btn onClick={() => onOpenFile(item.save_path, item.filename)} label="Open" icon="📂" />
-              <Btn onClick={() => onOpenFolder(item.save_path)} label="Folder" icon="📁" />
+              <Btn onClick={() => onOpenFolder(item.save_path, item.filename)} label="Folder" icon="📁" />
             </>
           )}
           {isCompleted ? (
@@ -152,11 +184,7 @@ export function DownloadItem({
 }
 
 function Btn({
-  onClick,
-  label,
-  icon,
-  danger = false,
-  accent = false,
+  onClick, label, icon, danger = false, accent = false,
 }: {
   onClick: () => void;
   label: string;

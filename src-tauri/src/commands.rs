@@ -51,7 +51,7 @@ pub async fn add_download(
         }
     };
 
-    manager::add_download(state.manager.clone(), url, filename, effective_path, chunk_count, app)
+    manager::add_download(state.manager.clone(), url, filename, effective_path, chunk_count, None, app)
         .await
         .map_err(map_err)
 }
@@ -119,16 +119,27 @@ pub async fn open_file(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn open_folder(path: String) -> Result<(), String> {
-    let folder = std::path::Path::new(&path)
-        .parent()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or(path);
+pub async fn open_folder(path: String, filename: String) -> Result<(), String> {
+    let file_path = std::path::Path::new(&path).join(&filename);
     #[cfg(target_os = "windows")]
-    std::process::Command::new("explorer").arg(&folder).spawn().map_err(|e| e.to_string())?;
+    {
+        // /select highlights the file in Explorer
+        let arg = format!("/select,{}", file_path.to_string_lossy());
+        std::process::Command::new("explorer").arg(&arg).spawn().map_err(|e| e.to_string())?;
+    }
     #[cfg(target_os = "linux")]
-    std::process::Command::new("xdg-open").arg(&folder).spawn().map_err(|e| e.to_string())?;
+    {
+        // xdg-open doesn't support file selection; open the containing folder
+        std::process::Command::new("xdg-open").arg(&path).spawn().map_err(|e| e.to_string())?;
+    }
     #[cfg(target_os = "macos")]
-    std::process::Command::new("open").arg(&folder).spawn().map_err(|e| e.to_string())?;
+    {
+        // -R reveals and selects the file in Finder
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(file_path.to_string_lossy().as_ref())
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }

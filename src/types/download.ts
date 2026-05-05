@@ -7,6 +7,12 @@ export type DownloadStatus =
   | "failed"
   | "cancelled";
 
+export interface ChunkProgress {
+  id: number;
+  downloaded: number;
+  size: number;
+}
+
 export interface DownloadItem {
   id: string;
   url: string;
@@ -22,6 +28,7 @@ export interface DownloadItem {
   error: string | null;
   supports_resume: boolean;
   retry_count: number;
+  chunk_progress?: ChunkProgress[];
 }
 
 export interface ProgressEvent {
@@ -30,6 +37,7 @@ export interface ProgressEvent {
   total: number;
   speed: number;
   eta_seconds: number;
+  chunks?: ChunkProgress[];
 }
 
 export interface CompletedEvent {

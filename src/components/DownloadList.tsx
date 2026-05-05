@@ -11,7 +11,7 @@ interface Props {
   onCancel: (id: string) => void;
   onRemove: (id: string) => void;
   onOpenFile: (path: string, filename: string) => void;
-  onOpenFolder: (path: string) => void;
+  onOpenFolder: (path: string, filename: string) => void;
 }
 
 export function DownloadList({

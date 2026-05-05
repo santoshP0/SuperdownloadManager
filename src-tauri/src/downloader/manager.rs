@@ -31,10 +31,21 @@ pub struct DownloadManager {
     pub max_concurrent: usize,
     pub speed_limit_bps: u64,
     pub notifications_enabled: bool,
+    pub client: reqwest::Client,
 }
 
 impl DownloadManager {
     pub fn new() -> Self {
+        let client = reqwest::Client::builder()
+            .user_agent(chunk::USER_AGENT)
+            .http1_only()                              // force HTTP/1.1: each chunk gets its own TCP connection (like IDM)
+            .pool_max_idle_per_host(32)
+            .pool_idle_timeout(Duration::from_secs(90))
+            .tcp_keepalive(Duration::from_secs(60))
+            .tcp_nodelay(true)                         // disable Nagle's algorithm for lower latency
+            .build()
+            .expect("failed to build optimized reqwest client");
+
         Self {
             downloads: persistence::load_history(),
             active: HashMap::new(),
@@ -42,6 +53,7 @@ impl DownloadManager {
             max_concurrent: 3,
             speed_limit_bps: 0,
             notifications_enabled: true,
+            client,
         }
     }
 
@@ -70,6 +82,7 @@ pub async fn add_download(
     filename: String,
     save_path: String,
     chunk_count: u8,
+    headers: Option<std::collections::HashMap<String, String>>,
     app: AppHandle,
 ) -> Result<String> {
     let id = Uuid::new_v4().to_string();
@@ -90,6 +103,7 @@ pub async fn add_download(
         error: None,
         supports_resume: false,
         retry_count: 0,
+        headers,
     };
 
     let should_start = {
@@ -104,6 +118,7 @@ pub async fn add_download(
     }
     Ok(id)
 }
+
 
 pub async fn pause_download(mgr: Arc<Mutex<DownloadManager>>, id: &str) -> Result<()> {
     let mut m = mgr.lock().await;
@@ -189,13 +204,24 @@ async fn drive(mgr: Arc<Mutex<DownloadManager>>, initial_id: String, app: AppHan
     let mut current_id = initial_id;
 
     loop {
-        let (url, filename, save_path, chunk_count, speed_limit_bps) = {
+        let (url, filename, save_path, chunk_count, speed_limit_bps, client, headers) = {
             let mut m = mgr.lock().await;
+            let speed_limit = m.speed_limit_bps;
+            let client_clone = m.client.clone();
+            
             let Some(item) = m.downloads.get_mut(&current_id) else { break };
             item.status = DownloadStatus::Downloading;
             item.retry_count = 0;
-            (item.url.clone(), item.filename.clone(), item.save_path.clone(),
-             item.chunk_count, m.speed_limit_bps)
+            
+            (
+                item.url.clone(), 
+                item.filename.clone(), 
+                item.save_path.clone(),
+                item.chunk_count, 
+                speed_limit, 
+                client_clone, 
+                item.headers.clone()
+            )
         };
 
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -212,9 +238,9 @@ async fn drive(mgr: Arc<Mutex<DownloadManager>>, initial_id: String, app: AppHan
             progress.store(0, Ordering::Relaxed);
 
             let r = run_download(
-                url.clone(), filename.clone(), save_path.clone(), chunk_count,
+                client.clone(), url.clone(), filename.clone(), save_path.clone(), chunk_count,
                 speed_limit_bps, cancelled.clone(), progress.clone(),
-                mgr.clone(), current_id.clone(), app.clone(),
+                mgr.clone(), current_id.clone(), app.clone(), headers.clone(),
             ).await;
 
             let was_cancelled = cancelled.load(Ordering::Relaxed);
@@ -311,6 +337,7 @@ async fn drive(mgr: Arc<Mutex<DownloadManager>>, initial_id: String, app: AppHan
 // ─── Core download logic ──────────────────────────────────────────────────────
 
 async fn run_download(
+    client: reqwest::Client,
     url: String,
     filename: String,
     save_path: String,
@@ -321,8 +348,9 @@ async fn run_download(
     mgr: Arc<Mutex<DownloadManager>>,
     id: String,
     app: AppHandle,
+    headers: Option<HashMap<String, String>>,
 ) -> Result<()> {
-    let (total_size, supports_ranges) = chunk::probe_url(&url).await?;
+    let (total_size, supports_ranges) = chunk::probe_url(&client, &url).await?;
 
     // Disk space check
     check_disk_space(&save_path, total_size)?;
@@ -352,10 +380,13 @@ async fn run_download(
 
     if supports_ranges && total_size > 2_000_000 && chunk_count > 1 {
         let chunks = initial_chunks.unwrap_or_else(|| create_chunks(total_size, chunk_count));
-        let already: u64 = chunks.iter().map(|c| c.downloaded).sum();
-        progress.store(already, Ordering::Relaxed);
 
-        // Per-chunk speed limit
+        // One atomic per chunk so the monitor can report individual progress
+        let chunk_atomics: Vec<Arc<AtomicU64>> = chunks.iter()
+            .map(|c| Arc::new(AtomicU64::new(c.downloaded)))
+            .collect();
+        let chunk_sizes: Vec<u64> = chunks.iter().map(|c| c.end - c.start + 1).collect();
+
         let per_chunk_limit = if speed_limit_bps > 0 {
             (speed_limit_bps / chunk_count as u64).max(1)
         } else {
@@ -363,17 +394,20 @@ async fn run_download(
         };
 
         let mon = start_monitor(
-            progress.clone(), cancelled.clone(), total_size, mgr.clone(), id.clone(), app.clone(),
+            chunk_atomics.clone(), chunk_sizes.clone(), cancelled.clone(),
+            total_size, mgr.clone(), id.clone(), app.clone(),
         );
 
-        let tasks: Vec<_> = chunks.iter().map(|c| {
+        let tasks: Vec<_> = chunks.iter().zip(chunk_atomics.iter()).map(|(c, atom)| {
             let url = url.clone();
             let path = temp_dir.join(format!("chunk_{:03}", c.id));
             let chunk = c.clone();
-            let prog = progress.clone();
+            let prog = atom.clone();
             let cancel = cancelled.clone();
+            let client = client.clone();
+            let headers = headers.clone();
             tokio::spawn(async move {
-                download_chunk(&url, &path, &chunk, prog, cancel, per_chunk_limit).await
+                download_chunk(&client, &url, &path, &chunk, prog, cancel, per_chunk_limit, headers).await
             })
         }).collect();
 
@@ -381,9 +415,8 @@ async fn run_download(
         mon.abort();
 
         if cancelled.load(Ordering::Relaxed) {
-            let updated: Vec<ChunkState> = chunks.iter().map(|c| {
-                let part = temp_dir.join(format!("chunk_{:03}", c.id));
-                let done = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(c.downloaded);
+            let updated: Vec<ChunkState> = chunks.iter().zip(chunk_atomics.iter()).map(|(c, atom)| {
+                let done = atom.load(Ordering::Relaxed);
                 ChunkState { downloaded: done, ..c.clone() }
             }).collect();
             if let Some(item) = mgr.lock().await.downloads.get(&id).cloned() {
@@ -399,10 +432,12 @@ async fn run_download(
         merge_chunks(&temp_dir, &final_path, chunks.len()).await?;
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
     } else {
+        // Single-stream: one atomic, no chunk breakdown
         let mon = start_monitor(
-            progress.clone(), cancelled.clone(), total_size, mgr.clone(), id.clone(), app.clone(),
+            vec![progress.clone()], vec![total_size], cancelled.clone(),
+            total_size, mgr.clone(), id.clone(), app.clone(),
         );
-        let res = download_single(&url, &final_path, progress, cancelled.clone(), speed_limit_bps).await;
+        let res = download_single(&client, &url, &final_path, progress, cancelled.clone(), speed_limit_bps, headers).await;
         mon.abort();
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
         res?;
@@ -411,8 +446,10 @@ async fn run_download(
     Ok(())
 }
 
+
 fn start_monitor(
-    progress: Arc<AtomicU64>,
+    chunk_atomics: Vec<Arc<AtomicU64>>,
+    chunk_sizes: Vec<u64>,
     cancelled: Arc<AtomicBool>,
     total_size: u64,
     mgr: Arc<Mutex<DownloadManager>>,
@@ -426,7 +463,11 @@ fn start_monitor(
             interval.tick().await;
             if cancelled.load(Ordering::Relaxed) { break; }
 
-            let downloaded = progress.load(Ordering::Relaxed);
+            let chunk_downloaded: Vec<u64> = chunk_atomics.iter()
+                .map(|a| a.load(Ordering::Relaxed))
+                .collect();
+            let downloaded: u64 = chunk_downloaded.iter().sum();
+
             let speed = tracker.update(downloaded);
             let eta = if speed > 0.0 && total_size > downloaded {
                 ((total_size - downloaded) as f64 / speed) as u64
@@ -440,9 +481,21 @@ fn start_monitor(
                     item.eta_seconds = eta;
                 }
             }
-            let _ = app.emit("download://progress",
-                json!({ "id": id, "downloaded": downloaded, "total": total_size,
-                         "speed": speed, "eta_seconds": eta }));
+
+            let chunks_json: Vec<serde_json::Value> = chunk_downloaded.iter()
+                .zip(chunk_sizes.iter())
+                .enumerate()
+                .map(|(i, (dl, sz))| json!({ "id": i, "downloaded": dl, "size": sz }))
+                .collect();
+
+            let _ = app.emit("download://progress", json!({
+                "id": id,
+                "downloaded": downloaded,
+                "total": total_size,
+                "speed": speed,
+                "eta_seconds": eta,
+                "chunks": chunks_json,
+            }));
         }
     })
 }
