@@ -37,7 +37,7 @@ pub async fn add_download(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<String, String> {
-    let chunk_count = chunk_count.max(1).min(16);
+    let chunk_count = chunk_count.max(1).min(32);
 
     let effective_path = {
         let s = state.settings.lock().await;

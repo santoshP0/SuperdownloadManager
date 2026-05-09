@@ -9,7 +9,7 @@ interface Props {
 
 const DEFAULT: Settings = {
   default_save_path: "",
-  default_chunk_count: 8,
+  default_chunk_count: 16,
   max_concurrent: 3,
   speed_limit_kbps: 0,
   clipboard_monitor: true,
@@ -93,7 +93,7 @@ export function SettingsPanel({ onClose }: Props) {
           <input
             type="range"
             min={1}
-            max={16}
+            max={32}
             step={1}
             value={settings.default_chunk_count}
             onChange={(e) => set("default_chunk_count", Number(e.target.value))}
@@ -101,8 +101,8 @@ export function SettingsPanel({ onClose }: Props) {
           />
           <div className="flex justify-between text-xs text-slate-500">
             <span>1</span>
-            <span>8</span>
             <span>16</span>
+            <span>32</span>
           </div>
         </div>
 

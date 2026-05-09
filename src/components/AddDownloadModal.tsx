@@ -125,16 +125,16 @@ export function AddDownloadModal({ initialUrl, onAdd, onClose }: Props) {
           <input
             type="range"
             min={1}
-            max={16}
+            max={32}
             step={1}
             value={chunks}
             onChange={(e) => setChunks(Number(e.target.value))}
             className="w-full accent-blue-500"
           />
           <div className="flex justify-between text-xs text-slate-500">
-            <span>1 (standard)</span>
-            <span>8 (fast)</span>
-            <span>16 (max)</span>
+            <span>1</span>
+            <span>16</span>
+            <span>32</span>
           </div>
         </div>
 

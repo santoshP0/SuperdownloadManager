@@ -353,12 +353,34 @@ async fn run_download(
     };
 
     if supports_ranges && total_size > 2_000_000 && chunk_count > 1 {
-        let chunks = initial_chunks.unwrap_or_else(|| create_chunks(total_size, chunk_count));
-        let already: u64 = chunks.iter().map(|c| c.downloaded).sum();
+        let workers = chunk_count as usize;
+
+        // Segment pool: divide the file into more segments than workers so that
+        // when a fast worker finishes its segment it immediately picks up another.
+        // This eliminates idle time caused by one slow connection holding up the
+        // whole download (the problem with static N-chunks → N-tasks).
+        //
+        // Target ~16 MB per segment; guarantee at least workers×2 segments so
+        // there's always work to steal; enforce a 2 MB floor so small files
+        // don't produce hundreds of tiny Range requests; cap at 128 (fits u8).
+        const TARGET_SEG: u64 = 16 * 1024 * 1024;
+        const MIN_SEG:    u64 =  2 * 1024 * 1024;
+        let want   = ((total_size / TARGET_SEG).max(workers as u64 * 2)).min(128);
+        let max_ok = (total_size / MIN_SEG).max(1);
+        let seg_count = want.min(max_ok) as u8;
+
+        // If the saved resume state has the same segment layout, reuse it;
+        // otherwise (e.g. settings changed) start fresh.
+        let segments = match initial_chunks.filter(|v| v.len() == seg_count as usize) {
+            Some(saved) => saved,
+            None        => create_chunks(total_size, seg_count),
+        };
+
+        let already: u64 = segments.iter().map(|c| c.downloaded).sum();
         progress.store(already, Ordering::Relaxed);
 
-        // Pre-allocate the output file so all chunks can write directly to their
-        // byte ranges without a merge step.
+        // Pre-allocate the output file so every worker writes at its byte offset
+        // with no merge pass after downloading.
         if !final_path.exists() || tokio::fs::metadata(&final_path).await
             .map(|m| m.len() != total_size).unwrap_or(true)
         {
@@ -366,14 +388,25 @@ async fn run_download(
             f.set_len(total_size).await?;
         }
 
-        // Per-chunk progress counters so we know exactly how much each chunk
-        // downloaded when we need to save resume state on pause/cancel.
-        let chunk_trackers: Vec<Arc<AtomicU64>> = chunks.iter()
+        // Per-segment byte counters — updated atomically by each worker and
+        // read when saving resume state on pause/cancel.
+        let seg_trackers: Vec<Arc<AtomicU64>> = segments.iter()
             .map(|_| Arc::new(AtomicU64::new(0)))
             .collect();
 
-        let per_chunk_limit = if speed_limit_bps > 0 {
-            (speed_limit_bps / chunk_count as u64).max(1)
+        // Shared work queue: each item is (segment, its tracker).
+        // Workers pop from the front; completed segments are simply gone.
+        // Incomplete segments (downloaded < end) are the only ones queued.
+        let queue = {
+            let items: std::collections::VecDeque<_> = segments.iter().enumerate()
+                .filter(|(_, s)| s.start + s.downloaded <= s.end)
+                .map(|(i, s)| (s.clone(), seg_trackers[i].clone()))
+                .collect();
+            Arc::new(Mutex::new(items))
+        };
+
+        let per_worker_limit = if speed_limit_bps > 0 {
+            (speed_limit_bps / workers as u64).max(1)
         } else {
             0
         };
@@ -382,27 +415,35 @@ async fn run_download(
             progress.clone(), cancelled.clone(), total_size, mgr.clone(), id.clone(), app.clone(),
         );
 
-        let tasks: Vec<_> = chunks.iter().enumerate().map(|(i, c)| {
-            let url = url.clone();
-            let path = final_path.clone();
-            let chunk = c.clone();
-            let prog = progress.clone();
-            let chunk_prog = chunk_trackers[i].clone();
+        // Spawn exactly `workers` tasks. Each loops: grab next segment → download
+        // → repeat, until the queue is empty or cancelled.
+        let worker_tasks: Vec<_> = (0..workers).map(|_| {
+            let queue  = queue.clone();
+            let url    = url.clone();
+            let path   = final_path.clone();
+            let prog   = progress.clone();
             let cancel = cancelled.clone();
             let client = client.clone();
             tokio::spawn(async move {
-                download_chunk(&url, &path, &chunk, prog, chunk_prog, cancel, per_chunk_limit, &client).await
+                while !cancel.load(Ordering::Relaxed) {
+                    let item = queue.lock().await.pop_front();
+                    let Some((seg, seg_prog)) = item else { break };
+                    download_chunk(
+                        &url, &path, &seg, prog.clone(), seg_prog,
+                        cancel.clone(), per_worker_limit, &client,
+                    ).await?;
+                }
+                Ok::<(), anyhow::Error>(())
             })
         }).collect();
 
-        let results = futures::future::join_all(tasks).await;
+        let results = futures::future::join_all(worker_tasks).await;
         mon.abort();
 
         if cancelled.load(Ordering::Relaxed) {
-            // Save resume state using per-chunk byte counts accumulated this session.
-            let updated: Vec<ChunkState> = chunks.iter().enumerate().map(|(i, c)| {
-                let session_bytes = chunk_trackers[i].load(Ordering::Relaxed);
-                ChunkState { downloaded: c.downloaded + session_bytes, ..c.clone() }
+            let updated: Vec<ChunkState> = segments.iter().enumerate().map(|(i, s)| {
+                let session = seg_trackers[i].load(Ordering::Relaxed);
+                ChunkState { downloaded: s.downloaded + session, ..s.clone() }
             }).collect();
             if let Some(item) = mgr.lock().await.downloads.get(&id).cloned() {
                 let rs = ResumeState { item, chunks: updated };
@@ -414,8 +455,6 @@ async fn run_download(
         }
 
         for r in results { r??; }
-
-        // No merge needed — chunks wrote directly into the output file.
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
     } else {
         let mon = start_monitor(

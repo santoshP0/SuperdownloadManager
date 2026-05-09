@@ -20,7 +20,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             default_save_path: default_save_path(),
-            default_chunk_count: 8,
+            default_chunk_count: 16,
             max_concurrent: 3,
             speed_limit_kbps: 0,
             clipboard_monitor: true,
