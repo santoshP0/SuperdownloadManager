@@ -5,12 +5,14 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::fs;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufWriter};
 use tokio::time::Instant;
 
 use super::task::ChunkState;
 
-fn build_client() -> Client {
+const WRITE_BUF: usize = 512 * 1024; // 512 KB — reduces syscalls on large streams
+
+pub fn build_client() -> Client {
     Client::builder()
         .user_agent("SuperDownloadManager/0.1 (Windows)")
         .tcp_keepalive(Duration::from_secs(30))
@@ -73,15 +75,21 @@ pub fn create_chunks(total_size: u64, chunk_count: u8) -> Vec<ChunkState> {
         .collect()
 }
 
-/// Download one chunk using HTTP Range.
-/// `speed_limit_bps` is the per-chunk byte cap (0 = unlimited).
+/// Download one chunk using HTTP Range, writing directly into `out_path` at the
+/// correct byte offset. Each chunk opens its own file handle so concurrent writes
+/// to non-overlapping ranges are safe.
+///
+/// `chunk_downloaded` is incremented by the bytes written this session (used to
+/// save accurate resume state on pause/cancel).
 pub async fn download_chunk(
     url: &str,
-    temp_path: &Path,
+    out_path: &Path,
     chunk: &ChunkState,
     progress: Arc<AtomicU64>,
+    chunk_downloaded: Arc<AtomicU64>,
     cancelled: Arc<AtomicBool>,
     speed_limit_bps: u64,
+    client: &Client,
 ) -> Result<()> {
     let resume_offset = chunk.start + chunk.downloaded;
     let end = chunk.end;
@@ -90,7 +98,6 @@ pub async fn download_chunk(
         return Ok(());
     }
 
-    let client = build_client();
     let range_header = format!("bytes={}-{}", resume_offset, end);
     let resp = client.get(url).header("Range", &range_header).send().await?;
 
@@ -98,11 +105,10 @@ pub async fn download_chunk(
         return Err(anyhow!("Chunk {} got status {}", chunk.id, resp.status()));
     }
 
-    let mut file = if chunk.downloaded > 0 {
-        fs::OpenOptions::new().create(true).append(true).open(temp_path).await?
-    } else {
-        fs::File::create(temp_path).await?
-    };
+    // Open the shared pre-allocated output file and seek to our write position.
+    let file = fs::OpenOptions::new().write(true).open(out_path).await?;
+    let mut file = BufWriter::with_capacity(WRITE_BUF, file);
+    file.seek(std::io::SeekFrom::Start(resume_offset)).await?;
 
     let mut resp = resp;
     let mut window_bytes = 0u64;
@@ -116,6 +122,7 @@ pub async fn download_chunk(
         let n = bytes.len() as u64;
         file.write_all(&bytes).await?;
         progress.fetch_add(n, Ordering::Relaxed);
+        chunk_downloaded.fetch_add(n, Ordering::Relaxed);
 
         if speed_limit_bps > 0 {
             window_bytes += n;
@@ -136,22 +143,21 @@ pub async fn download_chunk(
 }
 
 /// Fallback single-stream download (no Range support).
-/// `speed_limit_bps` is the total byte cap (0 = unlimited).
 pub async fn download_single(
     url: &str,
     save_path: &Path,
     progress: Arc<AtomicU64>,
     cancelled: Arc<AtomicBool>,
     speed_limit_bps: u64,
+    client: &Client,
 ) -> Result<()> {
-    let client = build_client();
     let resp = client.get(url).send().await?;
 
     if !resp.status().is_success() {
         return Err(anyhow!("Server returned {}", resp.status()));
     }
 
-    let mut file = fs::File::create(save_path).await?;
+    let mut file = BufWriter::with_capacity(WRITE_BUF, fs::File::create(save_path).await?);
     let mut resp = resp;
     let mut window_bytes = 0u64;
     let mut window_start = Instant::now();
@@ -183,31 +189,12 @@ pub async fn download_single(
     Ok(())
 }
 
-/// Concatenate chunk_{000..n-1} files from temp_dir into save_path.
-pub async fn merge_chunks(
-    temp_dir: &Path,
-    save_path: &Path,
-    chunk_count: usize,
-) -> Result<()> {
-    let mut out = fs::File::create(save_path).await?;
-    for i in 0..chunk_count {
-        let part = temp_dir.join(format!("chunk_{:03}", i));
-        if part.exists() {
-            let data = fs::read(&part).await?;
-            out.write_all(&data).await?;
-        }
-    }
-    out.flush().await?;
-    Ok(())
-}
-
 /// Check available disk space; returns Err if not enough.
 pub fn check_disk_space(save_path: &str, required: u64) -> Result<()> {
     if required == 0 {
         return Ok(());
     }
     let path = std::path::Path::new(save_path);
-    // Walk up to the first existing directory
     let mut check = path;
     let existing = loop {
         if check.exists() {
@@ -215,11 +202,11 @@ pub fn check_disk_space(save_path: &str, required: u64) -> Result<()> {
         }
         match check.parent() {
             Some(p) => check = p,
-            None => return Ok(()), // can't determine, skip
+            None => return Ok(()),
         }
     };
     let available = fs2::available_space(existing)?;
-    let needed = required + 10 * 1024 * 1024; // +10 MB buffer
+    let needed = required + 10 * 1024 * 1024;
     if available < needed {
         anyhow::bail!(
             "Not enough disk space: need {:.0} MB, only {:.0} MB available",

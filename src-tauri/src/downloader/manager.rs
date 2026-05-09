@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use super::chunk::{
-    self, check_disk_space, create_chunks, download_chunk, download_single, merge_chunks,
+    self, check_disk_space, create_chunks, download_chunk, download_single,
 };
 use super::speed::SpeedTracker;
 use super::task::{ChunkState, DownloadItem, DownloadStatus, ResumeState};
@@ -153,7 +153,9 @@ pub async fn cancel_download(mgr: Arc<Mutex<DownloadManager>>, id: &str) -> Resu
     };
 
     if let (Some(sp), Some(did)) = (save_path, dl_id) {
-        let _ = tokio::fs::remove_dir_all(PathBuf::from(sp).join(format!(".sdm_{}", did))).await;
+        // Remove temp dir (resume state) and any partial output file
+        let temp_dir = PathBuf::from(&sp).join(format!(".sdm_{}", did));
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
     }
     Ok(())
 }
@@ -292,7 +294,6 @@ async fn drive(mgr: Arc<Mutex<DownloadManager>>, initial_id: String, app: AppHan
             m.queue.pop_front()
         };
 
-        // Desktop notification on completion
         if result.is_ok() && !was_paused && notifications_on {
             let _ = app.notification()
                 .builder()
@@ -324,10 +325,8 @@ async fn run_download(
 ) -> Result<()> {
     let (total_size, supports_ranges) = chunk::probe_url(&url).await?;
 
-    // Disk space check
     check_disk_space(&save_path, total_size)?;
 
-    // Resolve filename conflict before touching filesystem
     let (final_path, actual_filename) = resolve_filename(Path::new(&save_path), &filename);
 
     {
@@ -338,6 +337,9 @@ async fn run_download(
             item.filename = actual_filename.clone();
         }
     }
+
+    // One client shared across all chunks — enables connection pooling.
+    let client = chunk::build_client();
 
     let temp_dir = PathBuf::from(&save_path).join(format!(".sdm_{}", id));
     tokio::fs::create_dir_all(&temp_dir).await?;
@@ -355,7 +357,21 @@ async fn run_download(
         let already: u64 = chunks.iter().map(|c| c.downloaded).sum();
         progress.store(already, Ordering::Relaxed);
 
-        // Per-chunk speed limit
+        // Pre-allocate the output file so all chunks can write directly to their
+        // byte ranges without a merge step.
+        if !final_path.exists() || tokio::fs::metadata(&final_path).await
+            .map(|m| m.len() != total_size).unwrap_or(true)
+        {
+            let f = tokio::fs::File::create(&final_path).await?;
+            f.set_len(total_size).await?;
+        }
+
+        // Per-chunk progress counters so we know exactly how much each chunk
+        // downloaded when we need to save resume state on pause/cancel.
+        let chunk_trackers: Vec<Arc<AtomicU64>> = chunks.iter()
+            .map(|_| Arc::new(AtomicU64::new(0)))
+            .collect();
+
         let per_chunk_limit = if speed_limit_bps > 0 {
             (speed_limit_bps / chunk_count as u64).max(1)
         } else {
@@ -366,14 +382,16 @@ async fn run_download(
             progress.clone(), cancelled.clone(), total_size, mgr.clone(), id.clone(), app.clone(),
         );
 
-        let tasks: Vec<_> = chunks.iter().map(|c| {
+        let tasks: Vec<_> = chunks.iter().enumerate().map(|(i, c)| {
             let url = url.clone();
-            let path = temp_dir.join(format!("chunk_{:03}", c.id));
+            let path = final_path.clone();
             let chunk = c.clone();
             let prog = progress.clone();
+            let chunk_prog = chunk_trackers[i].clone();
             let cancel = cancelled.clone();
+            let client = client.clone();
             tokio::spawn(async move {
-                download_chunk(&url, &path, &chunk, prog, cancel, per_chunk_limit).await
+                download_chunk(&url, &path, &chunk, prog, chunk_prog, cancel, per_chunk_limit, &client).await
             })
         }).collect();
 
@@ -381,10 +399,10 @@ async fn run_download(
         mon.abort();
 
         if cancelled.load(Ordering::Relaxed) {
-            let updated: Vec<ChunkState> = chunks.iter().map(|c| {
-                let part = temp_dir.join(format!("chunk_{:03}", c.id));
-                let done = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(c.downloaded);
-                ChunkState { downloaded: done, ..c.clone() }
+            // Save resume state using per-chunk byte counts accumulated this session.
+            let updated: Vec<ChunkState> = chunks.iter().enumerate().map(|(i, c)| {
+                let session_bytes = chunk_trackers[i].load(Ordering::Relaxed);
+                ChunkState { downloaded: c.downloaded + session_bytes, ..c.clone() }
             }).collect();
             if let Some(item) = mgr.lock().await.downloads.get(&id).cloned() {
                 let rs = ResumeState { item, chunks: updated };
@@ -396,13 +414,14 @@ async fn run_download(
         }
 
         for r in results { r??; }
-        merge_chunks(&temp_dir, &final_path, chunks.len()).await?;
+
+        // No merge needed — chunks wrote directly into the output file.
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
     } else {
         let mon = start_monitor(
             progress.clone(), cancelled.clone(), total_size, mgr.clone(), id.clone(), app.clone(),
         );
-        let res = download_single(&url, &final_path, progress, cancelled.clone(), speed_limit_bps).await;
+        let res = download_single(&url, &final_path, progress, cancelled.clone(), speed_limit_bps, &client).await;
         mon.abort();
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
         res?;
