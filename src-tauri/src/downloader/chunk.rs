@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use bytes::Bytes;
 use reqwest::Client;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -6,16 +7,21 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::fs;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufWriter};
+use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 use super::task::ChunkState;
 
-const WRITE_BUF: usize = 512 * 1024; // 512 KB — reduces syscalls on large streams
+const WRITE_BUF: usize = 512 * 1024; // 512 KB write-side buffer (reduces spawn_blocking calls)
+const PIPE_CAP: usize = 64;           // channel slots ≈ 1 MB of in-flight bytes per chunk
 
 pub fn build_client() -> Client {
     Client::builder()
         .user_agent("SuperDownloadManager/0.1 (Windows)")
         .tcp_keepalive(Duration::from_secs(30))
+        // Disable Nagle so Range request headers are sent to the server immediately
+        // rather than waiting for more data to batch.
+        .tcp_nodelay(true)
         .build()
         .expect("failed to initialise HTTP client — TLS backend unavailable")
 }
@@ -76,11 +82,13 @@ pub fn create_chunks(total_size: u64, chunk_count: u8) -> Vec<ChunkState> {
 }
 
 /// Download one chunk using HTTP Range, writing directly into `out_path` at the
-/// correct byte offset. Each chunk opens its own file handle so concurrent writes
-/// to non-overlapping ranges are safe.
+/// correct byte offset.
 ///
-/// `chunk_downloaded` is incremented by the bytes written this session (used to
-/// save accurate resume state on pause/cancel).
+/// A dedicated reader task drains the TCP receive buffer as fast as possible and
+/// forwards bytes through a channel. The caller's task writes those bytes to disk
+/// concurrently. This keeps the TCP receive window open at all times, eliminating
+/// the stutter that occurs when a serial read→write loop allows the socket buffer
+/// to fill and causes the server to pause.
 pub async fn download_chunk(
     url: &str,
     out_path: &Path,
@@ -105,20 +113,36 @@ pub async fn download_chunk(
         return Err(anyhow!("Chunk {} got status {}", chunk.id, resp.status()));
     }
 
-    // Open the shared pre-allocated output file and seek to our write position.
     let file = fs::OpenOptions::new().write(true).open(out_path).await?;
     let mut file = BufWriter::with_capacity(WRITE_BUF, file);
     file.seek(std::io::SeekFrom::Start(resume_offset)).await?;
 
-    let mut resp = resp;
+    // Reader task: forwards network bytes to the channel without waiting for disk.
+    let (tx, mut rx) = mpsc::channel::<reqwest::Result<Bytes>>(PIPE_CAP);
+    let read_task = tokio::spawn(async move {
+        let mut resp = resp;
+        loop {
+            match resp.chunk().await {
+                Ok(Some(b)) => { if tx.send(Ok(b)).await.is_err() { return; } }
+                Ok(None)    => return,
+                Err(e)      => { let _ = tx.send(Err(e)).await; return; }
+            }
+        }
+    });
+
+    // Writer: consumes the channel and writes to disk while the reader fills it.
     let mut window_bytes = 0u64;
     let mut window_start = Instant::now();
 
-    while let Some(bytes) = resp.chunk().await? {
+    while let Some(result) = rx.recv().await {
+        let bytes = result?; // propagate any network error
+
         if cancelled.load(Ordering::Relaxed) {
             file.flush().await?;
+            read_task.abort();
             return Ok(());
         }
+
         let n = bytes.len() as u64;
         file.write_all(&bytes).await?;
         progress.fetch_add(n, Ordering::Relaxed);
@@ -138,11 +162,13 @@ pub async fn download_chunk(
         }
     }
 
+    read_task.await.ok();
     file.flush().await?;
     Ok(())
 }
 
-/// Fallback single-stream download (no Range support).
+/// Fallback single-stream download (no Range support). Same pipelined
+/// reader/writer approach so the TCP window stays open during disk writes.
 pub async fn download_single(
     url: &str,
     save_path: &Path,
@@ -158,15 +184,31 @@ pub async fn download_single(
     }
 
     let mut file = BufWriter::with_capacity(WRITE_BUF, fs::File::create(save_path).await?);
-    let mut resp = resp;
+
+    let (tx, mut rx) = mpsc::channel::<reqwest::Result<Bytes>>(PIPE_CAP * 2);
+    let read_task = tokio::spawn(async move {
+        let mut resp = resp;
+        loop {
+            match resp.chunk().await {
+                Ok(Some(b)) => { if tx.send(Ok(b)).await.is_err() { return; } }
+                Ok(None)    => return,
+                Err(e)      => { let _ = tx.send(Err(e)).await; return; }
+            }
+        }
+    });
+
     let mut window_bytes = 0u64;
     let mut window_start = Instant::now();
 
-    while let Some(bytes) = resp.chunk().await? {
+    while let Some(result) = rx.recv().await {
+        let bytes = result?;
+
         if cancelled.load(Ordering::Relaxed) {
             file.flush().await?;
+            read_task.abort();
             return Ok(());
         }
+
         let n = bytes.len() as u64;
         file.write_all(&bytes).await?;
         progress.fetch_add(n, Ordering::Relaxed);
@@ -185,6 +227,7 @@ pub async fn download_single(
         }
     }
 
+    read_task.await.ok();
     file.flush().await?;
     Ok(())
 }

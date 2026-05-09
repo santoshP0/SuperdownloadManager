@@ -30,6 +30,7 @@ uuid = { version = "1", features = ["v4"] }
 anyhow = "1"
 futures = "0.3"
 fs2 = "0.4"
+bytes = "1"
 
 [profile.dev]
 incremental = true
